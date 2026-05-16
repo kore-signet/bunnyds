@@ -1,6 +1,7 @@
 # bunnyds ／(≧ x ≦)＼
 
 a tiny rust/asyncio executor for the 3ds. a work-in-progress!
+see a simple example also featuring egui: [kore-signet/bunnyds-egui-example](https://github.com/kore-signet/bunnyds-egui-example)
 
 ### why?
 
