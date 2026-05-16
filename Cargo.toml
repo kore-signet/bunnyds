@@ -1,0 +1,25 @@
+[package]
+name = "bunnyds"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bitflags = "2.11.1"
+bytemuck = "1.25.0"
+ctru-rs = { git = "https://github.com/rust3ds/ctru-rs" }
+ctru-sys = { git = "https://github.com/rust3ds/ctru-rs" }
+ds-ipc = { version = "0.1.0", git = "https://github.com/kore-signet/3ds-ipc" }
+libc = "0.2.186"
+mycelium-bitfield = "0.1.5"
+socket2 = { git = "https://github.com/rust-lang/socket2" }
+strum = { version = "0.28.0", features = ["derive"] }
+tracing = "0.1.44"
+widestring = "1.2.1"
+smallvec = { version = "1.15.1", features = ["union", "const_generics"] }
+parking_lot = "0.12.5"
+thingbuf = { version = "0.1.6", features = ["std"] }
+litemap = "0.8.2"
+futures = { version = "0.3.32", default-features = false, features = ["alloc"] }
+
+[package.metadata.cargo-3ds]
+romfs_dir = "romfs"
