@@ -55,7 +55,7 @@ pub static EXECUTOR_PORT: OnceLock<ExecutorPort> = OnceLock::new();
 mod waker {
     use std::task::{RawWaker, RawWakerVTable, Waker};
 
-    use crate::executor::{EXECUTOR_PORT, ExecutorCmd, TaskToken};
+    use crate::executor::{EXECUTOR_PORT, ExecutorCmd, TaskToken, WAKE_QUEUE};
 
     static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_waker, wake, wake_by_ref, drop);
 
@@ -70,10 +70,11 @@ mod waker {
     }
 
     unsafe fn wake(data: *const ()) {
-        let message = ExecutorCmd::WakeTask(TaskToken(data as u32)); // cast pointer value as task token
+        // let message = ExecutorCmd::WakeTask(TaskToken(data as u32)); // cast pointer value as task token
 
-        let client = EXECUTOR_PORT.get().unwrap();
-        client.make_session().unwrap().request(&message).unwrap();
+        // let client = EXECUTOR_PORT.get().unwrap();
+        // client.make_session().unwrap().request(&message).unwrap();
+        WAKE_QUEUE.get().unwrap().add(TaskToken(data as u32));
     }
 
     unsafe fn wake_by_ref(data: *const ()) {
@@ -221,11 +222,9 @@ impl IPCServerHandler<ExecutorCmd, ExecutorReply> for ExecutorHandler {
         request: ExecutorCmd,
         _server: &mut IPCServer<ExecutorCmd, ExecutorReply>,
     ) -> ExecutorReply {
-        // println!("executor: recv {request:?}");
 
         match request {
             ExecutorCmd::WakeTask(task) => {
-                // println!("hi task {task:?}");
                 self.wake(task);
                 ExecutorReply::Ok
             }
