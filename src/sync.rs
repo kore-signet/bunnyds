@@ -12,14 +12,17 @@ use ctru_sys::{
     ARBITRATION_SIGNAL, ARBITRATION_WAIT_IF_LESS_THAN, svcArbitrateAddressNoTimeout,
     svcCreateAddressArbiter,
 };
-use ds_ipc::{DSResult, ds_try};
+use ds_ipc::ds_try;
 use smallvec::SmallVec;
 
-use crate::executor::{self, TaskToken};
+use crate::{
+    err::BunnyResult,
+    executor::{self, TaskToken},
+};
 
 static mut ADDRESS_ARBITER: u32 = 0;
 
-pub fn init() -> DSResult<()> {
+pub fn init() -> BunnyResult<()> {
     ds_try!(unsafe { svcCreateAddressArbiter(&raw mut ADDRESS_ARBITER) });
     Ok(())
 }
@@ -106,7 +109,7 @@ impl<T: Send> Future for OneshotReceiver<T> {
 pub struct ArbitratedValue(pub AtomicI32);
 
 impl ArbitratedValue {
-    pub fn wait_less_than(&self, value: i32) -> DSResult<()> {
+    pub fn wait_less_than(&self, value: i32) -> BunnyResult<()> {
         ds_try!(unsafe {
             svcArbitrateAddressNoTimeout(
                 ADDRESS_ARBITER,
@@ -118,7 +121,7 @@ impl ArbitratedValue {
         Ok(())
     }
 
-    pub fn signal_one(&self) -> DSResult<()> {
+    pub fn signal_one(&self) -> BunnyResult<()> {
         ds_try!(unsafe {
             svcArbitrateAddressNoTimeout(
                 ADDRESS_ARBITER,

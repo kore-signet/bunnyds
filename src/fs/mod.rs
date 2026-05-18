@@ -3,8 +3,8 @@ pub mod sync_impl;
 mod types;
 use std::sync::OnceLock;
 
+use crate::BunnyResult;
 use ctru_sys::fsGetSessionHandle;
-use ds_ipc::DSResult;
 pub use types::*;
 use widestring::U16CStr;
 
@@ -22,7 +22,7 @@ pub fn init_sdmc(archive_fs_workers: usize) -> ArchiveHandle {
 }
 
 /// Opens a file on the SDMC filesystem using the async fs pool.
-pub fn open(path: &U16CStr, flags: OpenFlags) -> DSResult<AsyncFile> {
+pub fn open(path: &U16CStr, flags: OpenFlags) -> BunnyResult<AsyncFile> {
     let fs = FS_SESSION.get().unwrap();
     let archive = SDMC_ARCHIVE_HANDLE.get().unwrap();
     let file = fs.open_file(archive, path, flags)?;

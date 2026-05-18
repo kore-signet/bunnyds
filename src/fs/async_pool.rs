@@ -12,13 +12,14 @@ use ds_ipc::*;
 use tracing::info;
 
 use crate::{
+    BunnyError, BunnyResult,
     ctru_utils::Semaphore,
     executor::{EXECUTOR_PORT, ExecutorPort, ExecutorSession, TaskToken},
     fs::sync_impl::FileHandle,
 };
 
-pub(crate)  type AsyncFsPort = IPCClientPort<AsyncFsMsg, AsyncFsReply>;
-pub(crate)  static ASYNC_FS_POOL: OnceLock<AsyncFsPort> = OnceLock::new();
+pub(crate) type AsyncFsPort = IPCClientPort<AsyncFsMsg, AsyncFsReply>;
+pub(crate) static ASYNC_FS_POOL: OnceLock<AsyncFsPort> = OnceLock::new();
 
 pub fn init_pool(workers: usize) {
     let mut pool = AsyncFsPool::new(unsafe {
@@ -127,7 +128,7 @@ impl IoWorker {
                     info!("io.worker.{} write fd:{:x}", self.id, op.file);
 
                     let mut op = op.view();
-                    let res: Result<usize, ctru::Error> =
+                    let res: BunnyResult<usize> =
                         op.file
                             .write(op.offset as u64, op.data, super::WriteOptions::FLUSH);
                     op.resolve(res);
@@ -167,15 +168,19 @@ impl IoWorker {
 /// An async-io file!
 pub struct AsyncFile {
     handle: FileHandle,
+    cursor: u32,
 }
 
 impl AsyncFile {
     pub fn wrap(file: FileHandle) -> AsyncFile {
-        AsyncFile { handle: file }
+        AsyncFile {
+            handle: file,
+            cursor: 0,
+        }
     }
 
     /// Reads bytes from [offset] in file.
-    pub fn read<'a>(&'a mut self, offset: u32, buf: &'a mut [u8]) -> io_futures::Read<'a> {
+    pub fn read_at<'a>(&'a mut self, offset: u32, buf: &'a mut [u8]) -> io_futures::Read<'a> {
         io_futures::Read::new(
             &self.handle,
             ASYNC_FS_POOL.get().expect("FS async pool not initialized"),
@@ -185,7 +190,7 @@ impl AsyncFile {
     }
 
     /// Writes bytes from [offset] in file
-    pub fn write<'a>(&'a mut self, offset: u32, buf: &'a [u8]) -> io_futures::Write<'a> {
+    pub fn write_at<'a>(&'a mut self, offset: u32, buf: &'a [u8]) -> io_futures::Write<'a> {
         io_futures::Write::new(
             &self.handle,
             ASYNC_FS_POOL.get().expect("FS async pool not initialized"),
@@ -203,6 +208,38 @@ impl AsyncFile {
     }
 }
 
+impl embedded_io_async::ErrorType for AsyncFile {
+    type Error = BunnyError;
+}
+
+impl embedded_io_async::Read for AsyncFile {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        match self.read_at(self.cursor, buf).await {
+            Ok(v) => {
+                self.cursor += v as u32;
+                Ok(v)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+impl embedded_io_async::Write for AsyncFile {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        match self.write_at(self.cursor, buf).await {
+            Ok(bytes) => {
+                self.cursor += bytes as u32;
+                Ok(bytes)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        self.flush().await
+    }
+}
+
 #[derive(IPCMessage)]
 #[repr(u32)]
 pub(crate) enum AsyncFsMsg {
@@ -214,7 +251,7 @@ pub(crate) enum AsyncFsMsg {
 
 #[derive(IPCMessage)]
 #[repr(u32)]
-pub(crate)  enum AsyncFsReply {
+pub(crate) enum AsyncFsReply {
     Ok = 0xA,
 }
 
@@ -274,13 +311,13 @@ struct FileIoOperationView<'a> {
 }
 
 impl<'a> FileIoOperationView<'a> {
-    fn resolve(&self, res: DSResult<usize>) {
+    fn resolve(&self, res: BunnyResult<usize>) {
         match res {
             Ok(v) => {
                 self.state.store(0, Ordering::Release);
                 self.result.store(v as u32, Ordering::Release);
             }
-            Err(ctru::Error::Os(os_err)) => {
+            Err(BunnyError::Ctru(ctru::Error::Os(os_err))) => {
                 self.state.store(os_err, Ordering::Release);
                 self.result.store(0_u32, Ordering::Release);
             }
@@ -299,13 +336,13 @@ struct FileIoOperationViewMut<'a> {
 }
 
 impl<'a> FileIoOperationViewMut<'a> {
-    fn resolve(&self, res: DSResult<usize>) {
+    fn resolve(&self, res: BunnyResult<usize>) {
         match res {
             Ok(v) => {
                 self.state.store(0, Ordering::Release);
                 self.result.store(v as u32, Ordering::Release);
             }
-            Err(ctru::Error::Os(os_err)) => {
+            Err(BunnyError::Ctru(ctru::Error::Os(os_err))) => {
                 self.state.store(os_err, Ordering::Release);
                 self.result.store(0_u32, Ordering::Release);
             }
@@ -345,13 +382,13 @@ struct FileControlOpView<'a> {
 }
 
 impl<'a> FileControlOpView<'a> {
-    fn resolve(&self, res: DSResult<()>) {
+    fn resolve(&self, res: BunnyResult<()>) {
         match res {
             Ok(_) => {
                 self.state.store(0, Ordering::Release);
                 self.done.store(true, Ordering::Release);
             }
-            Err(ctru::Error::Os(os_err)) => {
+            Err(BunnyError::Ctru(ctru::Error::Os(os_err))) => {
                 self.state.store(os_err, Ordering::Release);
                 self.done.store(true, Ordering::Release);
             }
@@ -366,9 +403,10 @@ pub mod io_futures {
         task::Poll,
     };
 
-    use ds_ipc::{DSResult, IPCClientPort, IPCClientSession};
+    use ds_ipc::{IPCClientPort, IPCClientSession};
 
     use crate::{
+        BunnyResult,
         executor::TaskToken,
         fs::{
             async_pool::{AsyncFsMsg, AsyncFsReply, FileIoOperation},
@@ -376,10 +414,10 @@ pub mod io_futures {
         },
     };
 
-    fn state_resolve<T>(state: &AtomicI32, res: T) -> Poll<DSResult<T>> {
+    fn state_resolve<T>(state: &AtomicI32, res: T) -> Poll<BunnyResult<T>> {
         let state = state.load(Ordering::Acquire);
         if ctru_sys::R_FAILED(state) || ctru_sys::R_SUMMARY(state) != ctru_sys::RS_SUCCESS {
-            Poll::Ready(Err(ctru::Error::Os(state)))
+            Poll::Ready(Err(ctru::Error::Os(state).into()))
         } else {
             Poll::Ready(Ok(res))
         }
@@ -415,7 +453,7 @@ pub mod io_futures {
     }
 
     impl<'a> Future for Read<'a> {
-        type Output = DSResult<usize>;
+        type Output = BunnyResult<usize>;
 
         fn poll(
             mut self: std::pin::Pin<&mut Self>,
@@ -432,7 +470,7 @@ pub mod io_futures {
                     len: self.data.len() as u32,
                     data_ptr: self.data.as_ptr() as u32,
                 })) {
-                    Poll::Ready(Err(e))
+                    Poll::Ready(Err(e.into()))
                 } else {
                     self.registered = true;
                     Poll::Pending
@@ -475,7 +513,7 @@ pub mod io_futures {
     }
 
     impl<'a> Future for Write<'a> {
-        type Output = DSResult<usize>;
+        type Output = BunnyResult<usize>;
 
         fn poll(
             mut self: std::pin::Pin<&mut Self>,
@@ -492,7 +530,7 @@ pub mod io_futures {
                     len: self.data.len() as u32,
                     data_ptr: self.data.as_ptr() as u32,
                 })) {
-                    Poll::Ready(Err(e))
+                    Poll::Ready(Err(e.into()))
                 } else {
                     self.registered = true;
                     Poll::Pending
@@ -514,7 +552,10 @@ pub mod io_futures {
     }
 
     impl<'a> Flush<'a> {
-        pub(crate) fn new(file: &'a FileHandle, client: &IPCClientPort<AsyncFsMsg, AsyncFsReply>) -> Self {
+        pub(crate) fn new(
+            file: &'a FileHandle,
+            client: &IPCClientPort<AsyncFsMsg, AsyncFsReply>,
+        ) -> Self {
             Flush {
                 file,
                 registered: false,
@@ -526,7 +567,7 @@ pub mod io_futures {
     }
 
     impl<'a> Future for Flush<'a> {
-        type Output = DSResult<()>;
+        type Output = BunnyResult<()>;
 
         fn poll(
             mut self: std::pin::Pin<&mut Self>,
@@ -542,7 +583,7 @@ pub mod io_futures {
                             done: self.done.as_ptr() as u32,
                         }))
                 {
-                    Poll::Ready(Err(e))
+                    Poll::Ready(Err(e.into()))
                 } else {
                     self.registered = true;
                     Poll::Pending
@@ -564,7 +605,7 @@ pub mod io_futures {
     }
 
     impl Future for Close {
-        type Output = DSResult<()>;
+        type Output = BunnyResult<()>;
 
         fn poll(
             mut self: std::pin::Pin<&mut Self>,
@@ -580,7 +621,7 @@ pub mod io_futures {
                             done: self.done.as_ptr() as u32,
                         }))
                 {
-                    Poll::Ready(Err(e))
+                    Poll::Ready(Err(e.into()))
                 } else {
                     self.registered = true;
                     Poll::Pending

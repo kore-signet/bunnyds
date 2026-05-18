@@ -11,9 +11,9 @@ use socket2::{SockAddr, SockAddrStorage};
 
 mod err;
 
-pub use err::net_try;
-pub use err::{NetError, NetResult};
 use tracing::info;
+
+use crate::err::{BunnyResult, net_try};
 
 // const SOCKADDR_STORAGE_LEN: usize = std::mem::size_of::<sockaddr_storage>();
 
@@ -65,7 +65,7 @@ fn read_sockaddr(tmpaddr: &[u8]) -> SockAddr {
 
 #[derive(IPCMessage)]
 #[repr(u32)]
-pub(crate)  enum SocketMessage<'a> {
+pub(crate) enum SocketMessage<'a> {
     Initialize {
         #[normal]
         mem_size: u32,
@@ -195,7 +195,7 @@ pub(crate)  enum SocketMessage<'a> {
 
 #[derive(IPCMessage)]
 #[repr(u32)]
-pub(crate)  enum SocketReply {
+pub(crate) enum SocketReply {
     Init(#[normal] i32) = 0x1,
     Socket(#[normal] i32, #[normal] u32) = 0x2,
     Listen(#[normal] i32, #[normal] i32) = 0x3,
@@ -213,7 +213,7 @@ pub(crate)  enum SocketReply {
 
 pub static SOCKET_SERVICES: OnceLock<SocketService> = OnceLock::new();
 
-pub fn init() -> NetResult<()> {
+pub fn init() -> BunnyResult<()> {
     if SOCKET_SERVICES.get().is_some() {
         Ok(())
     } else {
@@ -227,7 +227,7 @@ pub struct SocketService {
 }
 
 impl SocketService {
-    fn init() -> NetResult<()> {
+    fn init() -> BunnyResult<()> {
         let num_bytes = 0x100000;
         let socket_memory = unsafe { memalign(0x1000, num_bytes) } as *mut u32;
         let mut shared_mem = 0;
@@ -264,7 +264,7 @@ impl SocketService {
         Ok(())
     }
 
-    pub fn create_socket(&self) -> NetResult<SocketHandle> {
+    pub fn create_socket(&self) -> BunnyResult<SocketHandle> {
         let SocketReply::Socket(res, desc) = self.inner.request(&SocketMessage::Socket {
             domain: AF_INET,
             ty: SOCK_STREAM,
@@ -280,7 +280,7 @@ impl SocketService {
         Ok(SocketHandle(desc))
     }
 
-    pub fn connect(&self, socket: &SocketHandle, addr: SocketAddrV4) -> NetResult<()> {
+    pub fn connect(&self, socket: &SocketHandle, addr: SocketAddrV4) -> BunnyResult<()> {
         let addr = sockaddr_as_bytes(addr);
 
         let SocketReply::Connect(res_code, posix_code) =
@@ -299,7 +299,7 @@ impl SocketService {
         Ok(())
     }
 
-    pub fn bind(&self, socket: &SocketHandle, addr: SocketAddrV4) -> NetResult<()> {
+    pub fn bind(&self, socket: &SocketHandle, addr: SocketAddrV4) -> BunnyResult<()> {
         let addr = sockaddr_as_bytes(addr);
 
         let SocketReply::Bind(res_code, posix_code) = self.inner.request(&SocketMessage::Bind {
@@ -318,7 +318,7 @@ impl SocketService {
         Ok(())
     }
 
-    pub fn listen(&self, socket: &SocketHandle) -> NetResult<()> {
+    pub fn listen(&self, socket: &SocketHandle) -> BunnyResult<()> {
         let SocketReply::Listen(res_code, posix_code) =
             self.inner.request(&SocketMessage::Listen {
                 socket: socket.0,
@@ -333,7 +333,7 @@ impl SocketService {
         Ok(())
     }
 
-    pub fn accept(&self, socket: &SocketHandle) -> NetResult<(SocketHandle, SocketAddrV4)> {
+    pub fn accept(&self, socket: &SocketHandle) -> BunnyResult<(SocketHandle, SocketAddrV4)> {
         let mut tmpaddr = [0u8; 0x1C];
 
         let SocketReply::Accept(res_code, posix_code) =
@@ -361,7 +361,12 @@ impl SocketService {
         ))
     }
 
-    pub fn send_to(&self, socket: &SocketHandle, addr: SocketAddrV4, data: &[u8]) -> NetResult<()> {
+    pub fn send_to(
+        &self,
+        socket: &SocketHandle,
+        addr: SocketAddrV4,
+        data: &[u8],
+    ) -> BunnyResult<()> {
         assert!(
             data.len() < 0x2000,
             "socket writes for more than 0x2000 bytes not yet supported ):"
@@ -389,7 +394,7 @@ impl SocketService {
         Ok(())
     }
 
-    pub fn recvfrom(&self, socket: &SocketHandle, data: &mut [u8]) -> NetResult<(SockAddr, u32)> {
+    pub fn recvfrom(&self, socket: &SocketHandle, data: &mut [u8]) -> BunnyResult<(SockAddr, u32)> {
         assert!(
             data.len() < 0x2000,
             "socket recvs for more than 0x2000 bytes not yet supported ):"
@@ -421,7 +426,7 @@ impl SocketService {
         ))
     }
 
-    pub fn poll(&self, poll_fds: &[PollFd], out: &mut [PollFd], timeout: i32) -> NetResult<()> {
+    pub fn poll(&self, poll_fds: &[PollFd], out: &mut [PollFd], timeout: i32) -> BunnyResult<()> {
         assert_eq!(poll_fds.len(), out.len());
         let SocketReply::Poll(res_code, posix_code) = self.inner.request(&SocketMessage::Poll {
             process_handle: 0,
@@ -438,7 +443,7 @@ impl SocketService {
         Ok(())
     }
 
-    pub fn set_nonblock(&self, socket: &SocketHandle) -> NetResult<()> {
+    pub fn set_nonblock(&self, socket: &SocketHandle) -> BunnyResult<()> {
         let SocketReply::Fcntl(res_code, posix_code) =
             self.inner.request(&SocketMessage::Fcntl {
                 socket: socket.0,
@@ -454,7 +459,7 @@ impl SocketService {
         Ok(())
     }
 
-    pub fn close(&self, socket: &SocketHandle) -> NetResult<()> {
+    pub fn close(&self, socket: &SocketHandle) -> BunnyResult<()> {
         let SocketReply::Close(res_code, posix_code) =
             self.inner.request(&SocketMessage::Close {
                 socket: socket.0,
@@ -468,7 +473,7 @@ impl SocketService {
         Ok(())
     }
 
-    pub fn shutdown(&self, socket: &SocketHandle, read: bool, write: bool) -> NetResult<()> {
+    pub fn shutdown(&self, socket: &SocketHandle, read: bool, write: bool) -> BunnyResult<()> {
         let how = if read && write {
             2
         } else if write && !read {
@@ -492,11 +497,11 @@ impl SocketService {
         Ok(())
     }
 
-    pub fn shutdown_service(self) -> NetResult<()> {
+    pub fn shutdown_service(self) -> BunnyResult<()> {
         self.shutdown_service_inner()
     }
 
-    fn shutdown_service_inner(&self) -> NetResult<()> {
+    fn shutdown_service_inner(&self) -> BunnyResult<()> {
         let SocketReply::ShutdownSockets(res_code) =
             self.inner.request(&SocketMessage::ShutdownSockets)?
         else {
@@ -574,7 +579,7 @@ impl TcpSocket {
         &self.addr
     }
 
-    pub fn connect(addr: impl ToSocketAddrs) -> NetResult<TcpSocket> {
+    pub fn connect(addr: impl ToSocketAddrs) -> BunnyResult<TcpSocket> {
         let soc = SOCKET_SERVICES.get().unwrap();
 
         let fd = soc.create_socket()?;
@@ -587,7 +592,7 @@ impl TcpSocket {
         Ok(TcpSocket { addr, handle: fd })
     }
 
-    pub fn bind(addr: impl ToSocketAddrs) -> NetResult<TcpListener> {
+    pub fn bind(addr: impl ToSocketAddrs) -> BunnyResult<TcpListener> {
         let soc = SOCKET_SERVICES.get().unwrap();
 
         let fd = soc.create_socket()?;
@@ -603,7 +608,7 @@ impl TcpSocket {
         })
     }
 
-    pub fn recv(&self, rd_buf: &mut [u8]) -> NetResult<usize> {
+    pub fn recv(&self, rd_buf: &mut [u8]) -> BunnyResult<usize> {
         let (_, bytes_read) = SOCKET_SERVICES
             .get()
             .unwrap()
@@ -612,14 +617,14 @@ impl TcpSocket {
         Ok(bytes_read as usize)
     }
 
-    pub fn send(&self, data: &[u8]) -> NetResult<()> {
+    pub fn send(&self, data: &[u8]) -> BunnyResult<()> {
         SOCKET_SERVICES
             .get()
             .unwrap()
             .send_to(&self.handle, self.addr, data)
     }
 
-    pub fn poll(&self, events: PollFlags, timeout: i32) -> NetResult<PollFlags> {
+    pub fn poll(&self, events: PollFlags, timeout: i32) -> BunnyResult<PollFlags> {
         let in_fds = [PollFd::new(self.handle.0, events)];
         let mut out_fds = [PollFd::default()];
 
@@ -631,7 +636,7 @@ impl TcpSocket {
         Ok(out_fds[0].poll_out)
     }
 
-    pub fn set_nonblock(&self) -> NetResult<()> {
+    pub fn set_nonblock(&self) -> BunnyResult<()> {
         SOCKET_SERVICES.get().unwrap().set_nonblock(&self.handle)?;
         Ok(())
     }
@@ -660,7 +665,7 @@ pub struct TcpListener {
 }
 
 impl TcpListener {
-    pub fn accept(&self) -> NetResult<TcpSocket> {
+    pub fn accept(&self) -> BunnyResult<TcpSocket> {
         let (fd, addr) = SOCKET_SERVICES.get().unwrap().accept(&self.inner.handle)?;
         Ok(unsafe { TcpSocket::from_fd(fd, addr) })
     }

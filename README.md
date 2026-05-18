@@ -13,9 +13,9 @@ this is, coincidentally, the exact model asyncio is based on! so it's a natural 
 ```rust
 use std::time::Duration;
 use ctru::prelude::*;
-use ds_ipc::DSResult;
+use bunnyds::BunnyResult;
 
-async fn async_main() -> DSResult<()> {
+async fn async_main() -> BunnyResult<()> {
     bunnyds::sleep(Duration::from_secs(5)).await;
     println!("task done!");
 

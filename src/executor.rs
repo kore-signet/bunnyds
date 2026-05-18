@@ -10,8 +10,11 @@ use litemap::LiteMap;
 use tracing::info;
 
 use crate::{
-    ctru_thread::CtruThreadBuilder, ctru_utils::WaitSignal, executor::waker::make_waker,
-    ctru_utils::SyncQueue, tunables,
+    ctru_thread::CtruThreadBuilder,
+    ctru_utils::{SyncQueue, WaitSignal},
+    err::BunnyResult,
+    executor::waker::make_waker,
+    tunables,
 };
 
 /// A token ID'ing one of our tasks.
@@ -32,7 +35,7 @@ pub type ExecutorPort = IPCClientPort<ExecutorCmd, ExecutorReply>;
 pub struct ExecutorSession(pub IPCClientSession<ExecutorCmd, ExecutorReply>);
 
 impl ExecutorSession {
-    pub fn wake(&self, task: TaskToken) -> DSResult<()> {
+    pub fn wake(&self, task: TaskToken) -> BunnyResult<()> {
         self.0.request(&ExecutorCmd::WakeTask(task))?;
         Ok(())
     }
@@ -55,7 +58,7 @@ pub static EXECUTOR_PORT: OnceLock<ExecutorPort> = OnceLock::new();
 mod waker {
     use std::task::{RawWaker, RawWakerVTable, Waker};
 
-    use crate::executor::{EXECUTOR_PORT, ExecutorCmd, TaskToken, WAKE_QUEUE};
+    use crate::executor::{TaskToken, WAKE_QUEUE};
 
     static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_waker, wake, wake_by_ref, drop);
 
@@ -163,7 +166,12 @@ impl Executor {
         std::thread::Builder::new()
             .stack_size(tunables::executor::THREAD_STACK_SIZE)
             .spawn(move || {
-                unsafe { ctru_sys::svcSetThreadPriority(CUR_THREAD_HANDLE, tunables::executor::EXECUTOR_THREAD_PRIORITY) };
+                unsafe {
+                    ctru_sys::svcSetThreadPriority(
+                        CUR_THREAD_HANDLE,
+                        tunables::executor::EXECUTOR_THREAD_PRIORITY,
+                    )
+                };
                 self.run()
             })
             .unwrap()
@@ -181,7 +189,7 @@ impl ExecutorHandler {
         let task_key: TaskToken = self
             .tasks
             .last()
-            .map_or(TaskToken(0), |(k,_)| TaskToken(k.0 + 1));
+            .map_or(TaskToken(0), |(k, _)| TaskToken(k.0 + 1));
         info!("spawning task {task_key:?}");
         // initial poll to let it register a waker and whatnot
         let task_waker = make_waker(task_key);
@@ -222,7 +230,6 @@ impl IPCServerHandler<ExecutorCmd, ExecutorReply> for ExecutorHandler {
         request: ExecutorCmd,
         _server: &mut IPCServer<ExecutorCmd, ExecutorReply>,
     ) -> ExecutorReply {
-
         match request {
             ExecutorCmd::WakeTask(task) => {
                 self.wake(task);

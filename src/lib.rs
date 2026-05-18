@@ -3,15 +3,17 @@ pub use ctru_sys::Handle as OSHandle;
 // pub mod arm_intrinsics;
 pub mod ctru_thread;
 pub mod ctru_utils;
+pub mod err;
 pub mod executor;
 pub mod fs;
 pub mod net;
 pub mod reactor;
+pub use err::{BunnyError, BunnyResult};
 
-pub use reactor::sleep;
 pub use executor::{spawn, spawn_blocking};
+pub use reactor::sleep;
 
-pub use ds_ipc::{DSResult, ds_try};
+pub use ds_ipc::ds_try;
 
 use crate::{executor::Executor, reactor::Reactor};
 pub mod net_sync;

@@ -4,13 +4,17 @@
 
 use ds_ipc::*;
 
-use crate::fs::{
-    ArchiveHandle, ArchiveId, DSPath, FileAttributes, OpenFlags, SerializableDSPath, WriteOptions,
+use crate::{
+    err::BunnyResult,
+    fs::{
+        ArchiveHandle, ArchiveId, DSPath, FileAttributes, OpenFlags, SerializableDSPath,
+        WriteOptions,
+    },
 };
 
 #[derive(IPCMessage)]
 #[repr(u32)]
-pub(crate)  enum FsUserMessage<'a> {
+pub(crate) enum FsUserMessage<'a> {
     Initialize = 0x801,
     OpenArchive(#[normal] ArchiveId, #[flatten] SerializableDSPath<'a, 0>) = 0x80c,
     OpenFile {
@@ -29,7 +33,7 @@ pub(crate)  enum FsUserMessage<'a> {
 
 #[derive(IPCMessage)]
 #[repr(u32)]
-pub(crate)  enum FsUserReply {
+pub(crate) enum FsUserReply {
     Initialize(#[normal] i32) = 0x801,
     OpenArchive(#[normal] i32, #[normal] ArchiveHandle) = 0x80c,
     OpenFile(#[normal] i32, #[move_handle] u32) = 0x802,
@@ -50,7 +54,7 @@ impl Filesystem {
         &self,
         archive: ArchiveId,
         path: impl Into<DSPath<'a>>,
-    ) -> DSResult<ArchiveHandle> {
+    ) -> BunnyResult<ArchiveHandle> {
         let FsUserReply::OpenArchive(res_code, handle) = self
             .inner
             .request(&FsUserMessage::OpenArchive(archive, path.into().as_ser()))?
@@ -66,7 +70,7 @@ impl Filesystem {
         archive: &ArchiveHandle,
         path: impl Into<DSPath<'a>>,
         flags: OpenFlags,
-    ) -> DSResult<FileHandle> {
+    ) -> BunnyResult<FileHandle> {
         let FsUserReply::OpenFile(res_code, handle) =
             self.inner.request(&FsUserMessage::OpenFile {
                 transaction: 0,
@@ -89,7 +93,7 @@ impl Filesystem {
 
 #[derive(IPCMessage)]
 #[repr(u32)]
-pub(crate)  enum FileHandleMessage<'a> {
+pub(crate) enum FileHandleMessage<'a> {
     Read {
         #[normal]
         offset: u64,
@@ -114,7 +118,7 @@ pub(crate)  enum FileHandleMessage<'a> {
 
 #[derive(IPCMessage)]
 #[repr(u32)]
-pub(crate)  enum FileHandleReply {
+pub(crate) enum FileHandleReply {
     Read(#[normal] i32, #[normal] u32) = 0x802,
     Write(#[normal] i32, #[normal] u32) = 0x803,
     Close(#[normal] i32) = 0x808,
@@ -126,7 +130,7 @@ pub struct FileHandle {
 }
 
 impl FileHandle {
-    pub fn write(&mut self, offset: u64, data: &[u8], options: WriteOptions) -> DSResult<usize> {
+    pub fn write(&mut self, offset: u64, data: &[u8], options: WriteOptions) -> BunnyResult<usize> {
         let FileHandleReply::Write(res_code, written) =
             self.inner.request(&FileHandleMessage::Write {
                 offset,
@@ -141,7 +145,7 @@ impl FileHandle {
         Ok(written as usize)
     }
 
-    pub fn read(&mut self, offset: u64, rd_buf: &mut [u8]) -> DSResult<usize> {
+    pub fn read(&mut self, offset: u64, rd_buf: &mut [u8]) -> BunnyResult<usize> {
         let FileHandleReply::Read(res_code, read) =
             self.inner.request(&FileHandleMessage::Read {
                 offset,
@@ -155,7 +159,7 @@ impl FileHandle {
         Ok(read as usize)
     }
 
-    pub fn flush(&mut self) -> DSResult<()> {
+    pub fn flush(&mut self) -> BunnyResult<()> {
         let FileHandleReply::Flush(res_code) = self.inner.request(&FileHandleMessage::Flush)?
         else {
             panic!()
@@ -164,7 +168,7 @@ impl FileHandle {
         Ok(())
     }
 
-    pub fn close(self) -> DSResult<()> {
+    pub fn close(self) -> BunnyResult<()> {
         let FileHandleReply::Close(res_code) = self.inner.request(&FileHandleMessage::Close)?
         else {
             panic!()

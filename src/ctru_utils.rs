@@ -2,9 +2,12 @@ use std::collections::VecDeque;
 
 use ctru_sys::{
     LightEvent, LightEvent_Init, LightEvent_Signal, LightEvent_Wait, LightSemaphore,
-    LightSemaphore_Acquire, LightSemaphore_Init, LightSemaphore_Release, RESET_ONESHOT, svcCreateSemaphore, svcReleaseSemaphore, svcWaitSynchronization,
+    LightSemaphore_Acquire, LightSemaphore_Init, LightSemaphore_Release, RESET_ONESHOT,
+    svcCreateSemaphore, svcReleaseSemaphore, svcWaitSynchronization,
 };
-use ds_ipc::{DSResult, ds_try};
+use ds_ipc::ds_try;
+
+use crate::err::BunnyResult;
 
 /// libctru-based semaphore
 pub struct Semaphore {
@@ -125,7 +128,7 @@ impl<T> SyncQueue<T> {
         self.vals.lock().pop_back()
     }
 
-    pub fn wait(&self, timeout: i64) -> DSResult<()> {
+    pub fn wait(&self, timeout: i64) -> BunnyResult<()> {
         ds_try!(unsafe { svcWaitSynchronization(self.semaphore_handle, timeout) });
         Ok(())
     }

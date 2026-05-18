@@ -1,16 +1,18 @@
 use std::{net::ToSocketAddrs, sync::Arc, task::Poll};
 
-use tracing::trace;
 use futures::FutureExt;
+use tracing::trace;
 
 use crate::{
+    BunnyError,
+    ctru_utils::SyncQueue,
+    err::BunnyResult,
     executor::{EXECUTOR_PORT, ExecutorPort, ExecutorSession, TaskToken},
     net_sync::{PollFlags, TcpListener, TcpSocket},
-    ctru_utils::SyncQueue,
     tunables,
 };
 
-pub use crate::net_sync::{NetError, NetResult, init};
+pub use crate::net_sync::init;
 
 #[derive(Clone, Copy, Debug)]
 pub enum PollInterest {
@@ -43,7 +45,7 @@ impl AsyncTcpSocket {
 
     pub fn connect(
         addr: impl ToSocketAddrs,
-    ) -> impl Future<Output = NetResult<AsyncTcpSocket>> + Send {
+    ) -> impl Future<Output = BunnyResult<AsyncTcpSocket>> + Send {
         let (oneshot_tx, oneshot_rx) = crate::sync::oneshot();
         let addr = addr.to_socket_addrs().unwrap().next().unwrap();
         std::thread::spawn(move || oneshot_tx.send(TcpSocket::connect(addr)));
@@ -57,7 +59,7 @@ impl AsyncTcpSocket {
         })
     }
 
-    pub fn bind(addr: impl ToSocketAddrs) -> NetResult<AsyncTcpListener> {
+    pub fn bind(addr: impl ToSocketAddrs) -> BunnyResult<AsyncTcpListener> {
         TcpSocket::bind(addr).map(AsyncTcpListener::wrap)
     }
 
@@ -142,7 +144,7 @@ impl AsyncTcpListener {
         }
     }
 
-    pub fn accept(&self) -> impl Future<Output = NetResult<AsyncTcpSocket>> + Send {
+    pub fn accept(&self) -> impl Future<Output = BunnyResult<AsyncTcpSocket>> + Send {
         let (oneshot_tx, oneshot_rx) = crate::sync::oneshot();
         let socket = Arc::clone(&self.socket);
         std::thread::spawn(move || oneshot_tx.send(socket.accept()));
@@ -163,7 +165,7 @@ pub struct Recv<'a> {
 }
 
 impl<'a> Future for Recv<'a> {
-    type Output = NetResult<usize>;
+    type Output = BunnyResult<usize>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -171,7 +173,7 @@ impl<'a> Future for Recv<'a> {
     ) -> std::task::Poll<Self::Output> {
         match self.socket.inner.recv(self.data) {
             Ok(res) => Poll::Ready(Ok(res)),
-            Err(NetError::Libc(libc::EAGAIN)) => {
+            Err(BunnyError::Libc(libc::EAGAIN)) => {
                 self.socket
                     .interests_queue
                     .add((TaskToken::from_waker(cx.waker()), PollInterest::Read));
@@ -188,12 +190,12 @@ pub struct SendFuture<'a> {
 }
 
 impl<'a> Future for SendFuture<'a> {
-    type Output = NetResult<()>;
+    type Output = BunnyResult<()>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         match self.socket.inner.send(self.data) {
             Ok(_) => Poll::Ready(Ok(())),
-            Err(NetError::Libc(libc::EAGAIN)) => {
+            Err(BunnyError::Libc(libc::EAGAIN)) => {
                 self.socket
                     .interests_queue
                     .add((TaskToken::from_waker(cx.waker()), PollInterest::Write));

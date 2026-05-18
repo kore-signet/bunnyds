@@ -19,6 +19,7 @@ smallvec = { version = "1.15.1", features = ["union", "const_generics"] }
 parking_lot = "0.12.5"
 thingbuf = { version = "0.1.6", features = ["std"] }
 litemap = "0.8.2"
+embedded-io-async = "0.7.0"
 futures = { version = "0.3.32", default-features = false, features = ["alloc"] }
 
 [package.metadata.cargo-3ds]
