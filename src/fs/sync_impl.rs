@@ -112,6 +112,7 @@ pub(crate) enum FileHandleMessage<'a> {
         #[map_buf(read, write)]
         data: &'a [u8],
     } = 0x803,
+    GetSize = 0x804,
     Close = 0x808,
     Flush = 0x809,
 }
@@ -121,6 +122,7 @@ pub(crate) enum FileHandleMessage<'a> {
 pub(crate) enum FileHandleReply {
     Read(#[normal] i32, #[normal] u32) = 0x802,
     Write(#[normal] i32, #[normal] u32) = 0x803,
+    GetSize(#[normal] i32, #[normal] u64) = 0x804,
     Close(#[normal] i32) = 0x808,
     Flush(#[normal] i32) = 0x809,
 }
@@ -175,6 +177,14 @@ impl FileHandle {
         };
         ds_try!(res_code);
         Ok(())
+    }
+
+    pub fn get_size(&mut self) -> BunnyResult<u64> {
+        let FileHandleReply::GetSize(res_code, size) = self.inner.request(&FileHandleMessage::GetSize)? else {
+            panic!()
+        };
+        ds_try!(res_code);
+        Ok(size)
     }
 
     pub unsafe fn from_raw(handle: u32) -> FileHandle {

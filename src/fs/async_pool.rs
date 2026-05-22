@@ -167,7 +167,8 @@ impl IoWorker {
 
 /// An async-io file!
 pub struct AsyncFile {
-    handle: FileHandle,
+    pub(crate) handle: FileHandle,
+    session: IPCClientSession<AsyncFsMsg, AsyncFsReply>,
     cursor: u32,
 }
 
@@ -176,6 +177,7 @@ impl AsyncFile {
         AsyncFile {
             handle: file,
             cursor: 0,
+            session: ASYNC_FS_POOL.get().expect("FS async pool not initialized").make_session().expect("max file handles open")
         }
     }
 
@@ -183,7 +185,7 @@ impl AsyncFile {
     pub fn read_at<'a>(&'a mut self, offset: u32, buf: &'a mut [u8]) -> io_futures::Read<'a> {
         io_futures::Read::new(
             &self.handle,
-            ASYNC_FS_POOL.get().expect("FS async pool not initialized"),
+            &self.session,
             offset,
             buf,
         )
@@ -193,7 +195,7 @@ impl AsyncFile {
     pub fn write_at<'a>(&'a mut self, offset: u32, buf: &'a [u8]) -> io_futures::Write<'a> {
         io_futures::Write::new(
             &self.handle,
-            ASYNC_FS_POOL.get().expect("FS async pool not initialized"),
+            &self.session,
             offset,
             buf,
         )
@@ -203,8 +205,17 @@ impl AsyncFile {
     pub fn flush<'a>(&'a mut self) -> io_futures::Flush<'a> {
         io_futures::Flush::new(
             &self.handle,
-            ASYNC_FS_POOL.get().expect("FS async pool not initialized"),
+            &self.session,
         )
+    }
+
+    /// this is blocking, because async overhead would probably be worse ? review this in future
+    pub fn get_size(&mut self) -> BunnyResult<u64> {
+        self.handle.get_size()
+    }
+
+    pub unsafe fn raw_handle(&mut self) -> &mut FileHandle {
+        &mut self.handle
     }
 }
 
@@ -425,7 +436,7 @@ pub mod io_futures {
 
     pub struct Read<'a> {
         file: &'a FileHandle,
-        client: IPCClientSession<AsyncFsMsg, AsyncFsReply>,
+        client: &'a IPCClientSession<AsyncFsMsg, AsyncFsReply>,
         offset: u32,
         data: &'a mut [u8],
         state: AtomicI32,
@@ -436,13 +447,13 @@ pub mod io_futures {
     impl<'a> Read<'a> {
         pub(crate) fn new(
             file: &'a FileHandle,
-            client: &IPCClientPort<AsyncFsMsg, AsyncFsReply>,
+            client: &'a IPCClientSession<AsyncFsMsg, AsyncFsReply>,
             offset: u32,
             buf: &'a mut [u8],
         ) -> Self {
             Read {
                 file,
-                client: client.make_session().unwrap(),
+                client,
                 offset,
                 data: buf,
                 state: AtomicI32::new(0),
@@ -485,7 +496,7 @@ pub mod io_futures {
 
     pub struct Write<'a> {
         file: &'a FileHandle,
-        client: IPCClientSession<AsyncFsMsg, AsyncFsReply>,
+        client: &'a IPCClientSession<AsyncFsMsg, AsyncFsReply>,
         offset: u32,
         data: &'a [u8],
         state: AtomicI32,
@@ -496,13 +507,13 @@ pub mod io_futures {
     impl<'a> Write<'a> {
         pub(crate) fn new(
             file: &'a FileHandle,
-            client: &IPCClientPort<AsyncFsMsg, AsyncFsReply>,
+            client: &'a IPCClientSession<AsyncFsMsg, AsyncFsReply>,
             offset: u32,
             buf: &'a [u8],
         ) -> Self {
             Write {
                 file,
-                client: client.make_session().unwrap(),
+                client,
                 offset,
                 data: buf,
                 state: AtomicI32::new(0),
@@ -548,20 +559,20 @@ pub mod io_futures {
         registered: bool,
         res: AtomicI32,
         done: AtomicBool,
-        client: IPCClientSession<AsyncFsMsg, AsyncFsReply>,
+        client: &'a IPCClientSession<AsyncFsMsg, AsyncFsReply>,
     }
 
     impl<'a> Flush<'a> {
         pub(crate) fn new(
             file: &'a FileHandle,
-            client: &IPCClientPort<AsyncFsMsg, AsyncFsReply>,
+            client: &'a IPCClientSession<AsyncFsMsg, AsyncFsReply>,
         ) -> Self {
             Flush {
                 file,
                 registered: false,
                 res: AtomicI32::new(0),
                 done: AtomicBool::new(false),
-                client: client.make_session().unwrap(),
+                client
             }
         }
     }
