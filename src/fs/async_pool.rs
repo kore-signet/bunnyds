@@ -177,36 +177,27 @@ impl AsyncFile {
         AsyncFile {
             handle: file,
             cursor: 0,
-            session: ASYNC_FS_POOL.get().expect("FS async pool not initialized").make_session().expect("max file handles open")
+            session: ASYNC_FS_POOL
+                .get()
+                .expect("FS async pool not initialized")
+                .make_session()
+                .expect("max file handles open"),
         }
     }
 
     /// Reads bytes from [offset] in file.
     pub fn read_at<'a>(&'a mut self, offset: u32, buf: &'a mut [u8]) -> io_futures::Read<'a> {
-        io_futures::Read::new(
-            &self.handle,
-            &self.session,
-            offset,
-            buf,
-        )
+        io_futures::Read::new(&self.handle, &self.session, offset, buf)
     }
 
     /// Writes bytes from [offset] in file
     pub fn write_at<'a>(&'a mut self, offset: u32, buf: &'a [u8]) -> io_futures::Write<'a> {
-        io_futures::Write::new(
-            &self.handle,
-            &self.session,
-            offset,
-            buf,
-        )
+        io_futures::Write::new(&self.handle, &self.session, offset, buf)
     }
 
     /// Flushes all data to file
     pub fn flush<'a>(&'a mut self) -> io_futures::Flush<'a> {
-        io_futures::Flush::new(
-            &self.handle,
-            &self.session,
-        )
+        io_futures::Flush::new(&self.handle, &self.session)
     }
 
     /// this is blocking, because async overhead would probably be worse ? review this in future
@@ -248,6 +239,14 @@ impl embedded_io_async::Write for AsyncFile {
 
     async fn flush(&mut self) -> Result<(), Self::Error> {
         self.flush().await
+    }
+}
+
+impl std::fmt::Debug for AsyncFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("AsyncFile")
+            .field(&format_args!("{:#x}", self.handle.inner.session))
+            .finish()
     }
 }
 
@@ -572,7 +571,7 @@ pub mod io_futures {
                 registered: false,
                 res: AtomicI32::new(0),
                 done: AtomicBool::new(false),
-                client
+                client,
             }
         }
     }

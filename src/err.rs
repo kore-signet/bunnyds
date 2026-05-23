@@ -96,7 +96,7 @@ pub fn net_try(ret_val: i32) -> BunnyResult<()> {
 pub enum BunnyError {
     Ctru(ctru::error::Error),
     Libc(i32),
-    Other(&'static str)
+    Other(&'static str),
 }
 
 impl From<ctru::error::Error> for BunnyError {
@@ -116,7 +116,7 @@ impl From<BunnyError> for ctru::error::Error {
                 ctru::Error::Libc(c.to_string_lossy().into())
             }
             BunnyError::Other(v) => ctru::error::Error::Other(v.into()),
-                    }
+        }
     }
 }
 
@@ -127,8 +127,8 @@ impl std::fmt::Display for BunnyError {
             BunnyError::Libc(libc_no) => {
                 let c = unsafe { CStr::from_ptr(libc::strerror(*libc_no)) };
                 write!(f, "libc: {}", c.to_string_lossy())
-            },
-            BunnyError::Other(v) => write!(f, "{v}")
+            }
+            BunnyError::Other(v) => write!(f, "{v}"),
         }
     }
 }

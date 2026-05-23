@@ -180,7 +180,9 @@ impl FileHandle {
     }
 
     pub fn get_size(&mut self) -> BunnyResult<u64> {
-        let FileHandleReply::GetSize(res_code, size) = self.inner.request(&FileHandleMessage::GetSize)? else {
+        let FileHandleReply::GetSize(res_code, size) =
+            self.inner.request(&FileHandleMessage::GetSize)?
+        else {
             panic!()
         };
         ds_try!(res_code);
