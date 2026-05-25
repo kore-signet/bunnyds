@@ -45,7 +45,7 @@ impl RuntimeConfiguration {
         crate::sync::init().unwrap();
 
         let executor = Executor::new();
-        let reactor = Reactor::new(&executor.server.client());
+        let reactor = Reactor::new();
 
         let executor_thread = executor.run_thread();
         let reactor_thread = reactor.run_thread();

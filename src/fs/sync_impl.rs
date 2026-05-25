@@ -2,7 +2,11 @@
 
 // // }
 
+use std::ffi::c_void;
+
+use ctru_sys::{FSFILE_Read, FSFILE_Write, getThreadCommandBuffer};
 use ds_ipc::*;
+use smallvec::SmallVec;
 
 use crate::{
     err::BunnyResult,
@@ -133,32 +137,39 @@ pub struct FileHandle {
 
 impl FileHandle {
     pub fn write(&mut self, offset: u64, data: &[u8], options: WriteOptions) -> BunnyResult<usize> {
-        let FileHandleReply::Write(res_code, written) =
-            self.inner.request(&FileHandleMessage::Write {
-                offset,
-                size: data.len() as u32,
-                options,
-                data,
-            })?
-        else {
-            panic!()
-        };
+        // let FileHandleReply::Write(res_code, written) =
+        //     self.inner.request(&FileHandleMessage::Write {
+        //         offset,
+        //         size: data.len() as u32,
+        //         options,
+        //         data,
+        //     })?
+        // else {
+        //     panic!()
+        // };
+        // ds_try!(res_code);
+
+        let mut bytes_written = 0;
+        let res_code = unsafe { FSFILE_Write(self.inner.session, &mut bytes_written, offset, data.as_ptr() as *const c_void, data.len() as u32, options.bits()) };
         ds_try!(res_code);
-        Ok(written as usize)
+        Ok(bytes_written as usize)
     }
 
     pub fn read(&mut self, offset: u64, rd_buf: &mut [u8]) -> BunnyResult<usize> {
-        let FileHandleReply::Read(res_code, read) =
-            self.inner.request(&FileHandleMessage::Read {
-                offset,
-                size: rd_buf.len() as u32,
-                data: rd_buf,
-            })?
-        else {
-            panic!()
-        };
+        // let FileHandleReply::Read(res_code, read) =
+        //     self.inner.request(&FileHandleMessage::Read {
+        //         offset,
+        //         size: rd_buf.len() as u32,
+        //         data: rd_buf,
+        //     })?
+        // else {
+        //     panic!()
+        // };
+        // ds_try!(res_code);
+        let mut bytes_read = 0;
+        let res_code = unsafe { FSFILE_Read(self.inner.session, &mut bytes_read, offset, rd_buf.as_mut_ptr() as *mut c_void, rd_buf.len() as u32) };
         ds_try!(res_code);
-        Ok(read as usize)
+        Ok(bytes_read as usize)
     }
 
     pub fn flush(&mut self) -> BunnyResult<()> {

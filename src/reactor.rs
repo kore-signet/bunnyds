@@ -7,7 +7,7 @@ use std::{
 use super::OSHandle;
 
 use crate::{
-    executor::{ExecutorPort, ExecutorSession, TaskToken},
+    executor::{ExecutorPort, ExecutorSession, TaskToken, WAKE_QUEUE},
     tunables,
 };
 
@@ -19,24 +19,24 @@ pub static REACTOR_PORT: OnceLock<IPCClientPort<ReactorCmd, ReactorReply>> = Onc
 // todo: pretty sure this can just be merged directly into the executor
 pub struct Reactor {
     pub(crate) server: IPCServer<ReactorCmd, ReactorReply>,
-    pub(crate) executor_session: ExecutorSession,
+    // pub(crate) executor_session: ExecutorSession,
 }
 
 impl Reactor {
-    pub fn new(executor_port: &ExecutorPort) -> Reactor {
+    pub fn new() -> Reactor {
         Reactor {
             server: IPCServer::new().unwrap().0,
-            executor_session: ExecutorSession(executor_port.make_session().unwrap()),
+            // executor_session: ExecutorSession(executor_port.make_session().unwrap()),
         }
     }
 
     pub fn run(self) {
         let Reactor {
             server,
-            executor_session,
+            // executor_session,
         } = self;
         let handler = ReactorHandler {
-            executor_session,
+            // executor_session,
             wait_tokens: LiteMap::new(),
         };
         let _ = REACTOR_PORT.set(server.client());
@@ -53,7 +53,7 @@ impl Reactor {
 
 struct ReactorHandler {
     wait_tokens: LiteMap<OSHandle, Vec<TaskToken>>,
-    executor_session: ExecutorSession,
+    // executor_session: ExecutorSession,
 }
 
 impl IPCServerHandler<ReactorCmd, ReactorReply> for ReactorHandler {
@@ -78,7 +78,8 @@ impl IPCServerHandler<ReactorCmd, ReactorReply> for ReactorHandler {
         _server: &mut IPCServer<ReactorCmd, ReactorReply>,
     ) {
         for token in self.wait_tokens.remove(&handle).unwrap() {
-            self.executor_session.wake(token);
+            WAKE_QUEUE.get().unwrap().add(token);
+            // self.executor_session.wake(token);
         }
     }
 }

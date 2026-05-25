@@ -58,7 +58,7 @@ impl AsyncFsPool {
         let session = self.executor_port.make_session().unwrap();
         let id = self.threads.len();
         self.threads.push(std::thread::spawn(move || {
-            unsafe { ctru_sys::svcSetThreadPriority(unsafe { ctru_sys::CUR_THREAD_HANDLE }, 0x3F) };
+            // unsafe { ctru_sys::svcSetThreadPriority(unsafe { ctru_sys::CUR_THREAD_HANDLE }, 0x3F) };
 
             IoWorker {
                 id,
@@ -78,7 +78,7 @@ impl AsyncFsPool {
     ) {
         let (server, port) = IPCServer::new().unwrap();
         let thread = std::thread::spawn(move || {
-            unsafe { ctru_sys::svcSetThreadPriority(unsafe { ctru_sys::CUR_THREAD_HANDLE }, 0x3F) };
+            // unsafe { ctru_sys::svcSetThreadPriority(unsafe { ctru_sys::CUR_THREAD_HANDLE }, 0x3F) };
 
             server.run(self)
         });
@@ -130,18 +130,15 @@ impl IoWorker {
                     let mut op = op.view();
                     let res: BunnyResult<usize> =
                         op.file
-                            .write(op.offset as u64, op.data, super::WriteOptions::FLUSH);
+                            .write(op.offset as u64, op.data, super::WriteOptions::empty());
                     op.resolve(res);
                     // drop(guard);
                     self.executor.wake(op.task).unwrap();
                 }
                 AsyncFsMsg::Read(mut op) => {
-                    info!("io.worker.{} read fd:{:x}", self.id, op.file);
-
                     let mut op = op.view_mut();
                     let res = op.file.read(op.offset as u64, op.data);
                     op.resolve(res);
-                    // drop(guard);
                     self.executor.wake(op.task).unwrap();
                 }
                 AsyncFsMsg::Flush(op) => {

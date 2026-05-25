@@ -3,11 +3,11 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use ctru_sys::CUR_THREAD_HANDLE;
+use ctru_sys::{CUR_THREAD_HANDLE, svcWaitSynchronizationN};
 use ds_ipc::*;
 use futures::future::BoxFuture;
 use litemap::LiteMap;
-use tracing::info;
+use tracing::{info, trace};
 
 use crate::{
     ctru_thread::CtruThreadBuilder,
@@ -36,7 +36,8 @@ pub struct ExecutorSession(pub IPCClientSession<ExecutorCmd, ExecutorReply>);
 
 impl ExecutorSession {
     pub fn wake(&self, task: TaskToken) -> BunnyResult<()> {
-        self.0.request(&ExecutorCmd::WakeTask(task))?;
+        // self.0.request(&ExecutorCmd::WakeTask(task))?;
+        WAKE_QUEUE.get().unwrap().add(task);
         Ok(())
     }
 }
@@ -99,7 +100,7 @@ pub static WAKE_QUEUE: OnceLock<SyncQueue<TaskToken>> = OnceLock::new();
 
 pub struct Executor {
     pub(crate) tasks: LiteMap<TaskToken, BoxFuture<'static, ()>>,
-    pub(crate) server: IPCServer<ExecutorCmd, ExecutorReply>,
+    // pub(crate) server: IPCServer<ExecutorCmd, ExecutorReply>,
     pub(crate) task_semaphore: u32,
     pub(crate) wake_semaphore: u32,
 }
@@ -118,12 +119,12 @@ impl Executor {
         let task_semaphore = TASK_QUEUE.get_or_init(SyncQueue::new).semaphore_handle;
         let wake_semaphore = WAKE_QUEUE.get_or_init(SyncQueue::new).semaphore_handle;
 
-        server.add_handle_to_list(task_semaphore);
-        server.add_handle_to_list(wake_semaphore);
+        // server.add_handle_to_list(task_semaphore);
+        // server.add_handle_to_list(wake_semaphore);
 
         Executor {
             tasks: LiteMap::new(),
-            server,
+            // server,
             wake_semaphore,
             task_semaphore,
         }
@@ -151,15 +152,17 @@ impl Executor {
     pub fn run(self) {
         let Executor {
             tasks,
-            server,
+            // server,
             wake_semaphore,
             task_semaphore,
         } = self;
-        server.run(ExecutorHandler {
-            tasks,
-            wake_semaphore,
-            task_semaphore,
-        });
+        ExecutorHandler { task_counter: 0, wake_semaphore, task_semaphore, tasks }.run();
+        // server.run(ExecutorHandler {
+        //     task_counter: 0,
+        //     tasks,
+        //     wake_semaphore,
+        //     task_semaphore,
+        // });
     }
 
     pub fn run_thread(self) -> std::thread::JoinHandle<()> {
@@ -179,17 +182,33 @@ impl Executor {
 }
 
 struct ExecutorHandler {
+    pub task_counter: u32,
     pub tasks: LiteMap<TaskToken, BoxFuture<'static, ()>>,
     pub task_semaphore: u32,
     pub wake_semaphore: u32,
 }
 
 impl ExecutorHandler {
+    fn run(mut self) {
+        let handles = [self.task_semaphore, self.wake_semaphore];
+        loop {
+            let mut idx = 0;
+            unsafe { svcWaitSynchronizationN(&mut idx, handles.as_ptr(), 2, false, i64::MAX) };
+            if idx == 1 {
+                while let Some(task) = WAKE_QUEUE.get().unwrap().remove() {
+                    self.wake(task);
+                }
+            } else if idx == 0 {
+                while let Some(task) = TASK_QUEUE.get().unwrap().remove() {
+                    self.spawn(task);
+                }
+            }
+        }
+    }
+
     fn spawn(&mut self, mut fut: BoxFuture<'static, ()>) -> Option<TaskToken> {
-        let task_key: TaskToken = self
-            .tasks
-            .last()
-            .map_or(TaskToken(0), |(k, _)| TaskToken(k.0 + 1));
+        let task_key: TaskToken = TaskToken(self.task_counter);
+        self.task_counter += 1;
         info!("spawning task {task_key:?}");
         // initial poll to let it register a waker and whatnot
         let task_waker = make_waker(task_key);
@@ -214,48 +233,40 @@ impl ExecutorHandler {
 
         match task_fut.as_mut().poll(&mut ctx) {
             Poll::Ready(()) => {
-                info!("task done, resolving");
+                trace!("task done, resolving");
                 self.tasks.remove(&task);
             }
             Poll::Pending => {
-                info!("task not done ):");
+                trace!("task not done ):");
             }
         }
     }
 }
 
-impl IPCServerHandler<ExecutorCmd, ExecutorReply> for ExecutorHandler {
-    fn handle_request(
-        &mut self,
-        request: ExecutorCmd,
-        _server: &mut IPCServer<ExecutorCmd, ExecutorReply>,
-    ) -> ExecutorReply {
-        match request {
-            ExecutorCmd::WakeTask(task) => {
-                self.wake(task);
-                ExecutorReply::Ok
-            }
-        }
-    }
+// impl IPCServerHandler<ExecutorCmd, ExecutorReply> for ExecutorHandler {
+//     fn handle_request(
+//         &mut self,
+//         request: ExecutorCmd,
+//         _server: &mut IPCServer<ExecutorCmd, ExecutorReply>,
+//     ) -> ExecutorReply {
+//         match request {
+//             ExecutorCmd::WakeTask(task) => {
+//                 self.wake(task);
+//                 ExecutorReply::Ok
+//             }
+//         }
+//     }
 
-    fn handle_additional_oshandle(
-        &mut self,
-        handle: ctru_sys::Handle,
-        server: &mut IPCServer<ExecutorCmd, ExecutorReply>,
-    ) {
-        server.add_handle_to_list(handle);
+//     fn handle_additional_oshandle(
+//         &mut self,
+//         handle: ctru_sys::Handle,
+//         server: &mut IPCServer<ExecutorCmd, ExecutorReply>,
+//     ) {
+//         server.add_handle_to_list(handle);
 
-        if handle == self.wake_semaphore {
-            while let Some(task) = WAKE_QUEUE.get().unwrap().remove() {
-                self.wake(task);
-            }
-        } else if handle == self.task_semaphore {
-            while let Some(task) = TASK_QUEUE.get().unwrap().remove() {
-                self.spawn(task);
-            }
-        }
-    }
-}
+
+//     }
+// }
 
 // this impl is heavily, heavily based on https://jacko.io/async_tasks.html#joinhandle
 
@@ -316,6 +327,7 @@ where
     };
     let task = Box::pin(wrap_with_join_state(future, join_state, None));
     TASK_QUEUE.get().unwrap().add(task);
+    info!("task spawned");
     join_handle
 }
 
