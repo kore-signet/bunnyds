@@ -1,11 +1,9 @@
 use std::{
-    collections::VecDeque,
     mem::ManuallyDrop,
     sync::{
-        Arc, Mutex, OnceLock,
+        OnceLock,
         atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
     },
-    thread::JoinHandle,
 };
 
 use ds_ipc::*;
@@ -13,115 +11,48 @@ use tracing::info;
 
 use crate::{
     BunnyError, BunnyResult,
-    ctru_utils::Semaphore,
-    executor::{EXECUTOR_PORT, ExecutorPort, ExecutorSession, TaskToken},
+    ctru_utils::SyncQueue,
+    executor::{EXECUTOR_PORT, ExecutorSession, TaskToken},
     fs::sync_impl::FileHandle,
 };
 
-pub(crate) type AsyncFsPort = IPCClientPort<AsyncFsMsg, AsyncFsReply>;
-pub(crate) static ASYNC_FS_POOL: OnceLock<AsyncFsPort> = OnceLock::new();
+pub(crate) static ASYNC_FS_POOL: OnceLock<SyncQueue<AsyncFsMsg>> = OnceLock::new();
 
 pub fn init_pool(workers: usize) {
-    let mut pool = AsyncFsPool::new(unsafe {
+    ASYNC_FS_POOL.set(SyncQueue::new()).unwrap();
+
+    let port = unsafe {
         EXECUTOR_PORT
             .get()
             .expect("executor not initialized")
             .duplicate()
-    });
-    for _ in 0..workers {
-        pool.spawn_worker();
-    }
-    let (_, port) = pool.run();
-
-    ASYNC_FS_POOL.set(port);
-}
-
-pub struct AsyncFsPool {
-    tasks: Arc<Mutex<VecDeque<AsyncFsMsg>>>,
-    io_signal: Arc<Semaphore>,
-    threads: Vec<JoinHandle<()>>,
-    executor_port: ExecutorPort,
-}
-
-impl AsyncFsPool {
-    pub fn new(port: ExecutorPort) -> AsyncFsPool {
-        AsyncFsPool {
-            tasks: Arc::new(Mutex::new(VecDeque::new())),
-            io_signal: Arc::new(Semaphore::new(255)),
-            threads: Vec::new(),
-            executor_port: port,
-        }
-    }
-
-    pub fn spawn_worker(&mut self) {
-        let (tasks, io_signal) = (Arc::clone(&self.tasks), Arc::clone(&self.io_signal));
-        let session = self.executor_port.make_session().unwrap();
-        let id = self.threads.len();
-        self.threads.push(std::thread::spawn(move || {
-            // unsafe { ctru_sys::svcSetThreadPriority(unsafe { ctru_sys::CUR_THREAD_HANDLE }, 0x3F) };
-
+    };
+    for id in 0..workers {
+        let session = port.make_session().unwrap();
+        std::thread::spawn(move || {
             IoWorker {
                 id,
-                tasks,
-                io_signal,
                 executor: ExecutorSession(session),
             }
-            .run();
-        }));
-    }
-
-    pub fn run(
-        self,
-    ) -> (
-        std::thread::JoinHandle<()>,
-        IPCClientPort<AsyncFsMsg, AsyncFsReply>,
-    ) {
-        let (server, port) = IPCServer::new().unwrap();
-        let thread = std::thread::spawn(move || {
-            // unsafe { ctru_sys::svcSetThreadPriority(unsafe { ctru_sys::CUR_THREAD_HANDLE }, 0x3F) };
-
-            server.run(self)
+            .run()
         });
-        let _ = ASYNC_FS_POOL.set(unsafe { port.duplicate() });
-        (thread, port)
-    }
-}
-
-impl IPCServerHandler<AsyncFsMsg, AsyncFsReply> for AsyncFsPool {
-    fn handle_request(
-        &mut self,
-        request: AsyncFsMsg,
-        _server: &mut IPCServer<AsyncFsMsg, AsyncFsReply>,
-    ) -> AsyncFsReply {
-        self.tasks.lock().unwrap().push_back(request);
-        self.io_signal.add_permits(1);
-        AsyncFsReply::Ok
-    }
-
-    fn handle_additional_oshandle(
-        &mut self,
-        _handle: u32,
-        _server: &mut IPCServer<AsyncFsMsg, AsyncFsReply>,
-    ) {
-        // todo!()
     }
 }
 
 pub(crate) struct IoWorker {
     id: usize,
-    tasks: Arc<Mutex<VecDeque<AsyncFsMsg>>>,
-    io_signal: Arc<Semaphore>,
     executor: ExecutorSession,
 }
 
 impl IoWorker {
     pub(crate) fn run(self) {
-        // let worker_span = info_span!("io.worker", id = self.id);
-        // let guard = worker_span.enter();
-        loop {
-            self.io_signal.acquire_permits(1);
+        let task_queue = ASYNC_FS_POOL.get().unwrap();
 
-            let task = self.tasks.lock().unwrap().pop_front().unwrap();
+        loop {
+            task_queue.wait(i64::MAX).unwrap();
+            let Some(task) = task_queue.remove() else {
+                continue;
+            };
 
             match task {
                 AsyncFsMsg::Write(op) => {
@@ -165,7 +96,6 @@ impl IoWorker {
 /// An async-io file!
 pub struct AsyncFile {
     pub(crate) handle: FileHandle,
-    session: IPCClientSession<AsyncFsMsg, AsyncFsReply>,
     cursor: u32,
 }
 
@@ -174,27 +104,22 @@ impl AsyncFile {
         AsyncFile {
             handle: file,
             cursor: 0,
-            session: ASYNC_FS_POOL
-                .get()
-                .expect("FS async pool not initialized")
-                .make_session()
-                .expect("max file handles open"),
         }
     }
 
     /// Reads bytes from [offset] in file.
     pub fn read_at<'a>(&'a mut self, offset: u32, buf: &'a mut [u8]) -> io_futures::Read<'a> {
-        io_futures::Read::new(&self.handle, &self.session, offset, buf)
+        io_futures::Read::new(&self.handle, offset, buf)
     }
 
     /// Writes bytes from [offset] in file
     pub fn write_at<'a>(&'a mut self, offset: u32, buf: &'a [u8]) -> io_futures::Write<'a> {
-        io_futures::Write::new(&self.handle, &self.session, offset, buf)
+        io_futures::Write::new(&self.handle, offset, buf)
     }
 
     /// Flushes all data to file
     pub fn flush<'a>(&'a mut self) -> io_futures::Flush<'a> {
-        io_futures::Flush::new(&self.handle, &self.session)
+        io_futures::Flush::new(&self.handle)
     }
 
     /// this is blocking, because async overhead would probably be worse ? review this in future
@@ -247,7 +172,7 @@ impl std::fmt::Debug for AsyncFile {
     }
 }
 
-#[derive(IPCMessage)]
+#[derive(IPCMessage, Debug)]
 #[repr(u32)]
 pub(crate) enum AsyncFsMsg {
     Write(#[flatten] FileIoOperation) = 0xA,
@@ -262,7 +187,7 @@ pub(crate) enum AsyncFsReply {
     Ok = 0xA,
 }
 
-#[derive(IPCSerializable)]
+#[derive(IPCSerializable, Debug)]
 pub(crate) struct FileIoOperation {
     #[normal]
     pub file: u32,
@@ -358,7 +283,7 @@ impl<'a> FileIoOperationViewMut<'a> {
     }
 }
 
-#[derive(IPCSerializable)]
+#[derive(IPCSerializable, Debug)]
 pub(crate) struct FileControlOperation {
     #[normal]
     pub file: u32,
@@ -410,13 +335,13 @@ pub mod io_futures {
         task::Poll,
     };
 
-    use ds_ipc::{IPCClientPort, IPCClientSession};
+    use ds_ipc::IPCClientSession;
 
     use crate::{
         BunnyResult,
         executor::TaskToken,
         fs::{
-            async_pool::{AsyncFsMsg, AsyncFsReply, FileIoOperation},
+            async_pool::{ASYNC_FS_POOL, AsyncFsMsg, AsyncFsReply, FileIoOperation},
             sync_impl::FileHandle,
         },
     };
@@ -432,7 +357,6 @@ pub mod io_futures {
 
     pub struct Read<'a> {
         file: &'a FileHandle,
-        client: &'a IPCClientSession<AsyncFsMsg, AsyncFsReply>,
         offset: u32,
         data: &'a mut [u8],
         state: AtomicI32,
@@ -441,15 +365,9 @@ pub mod io_futures {
     }
 
     impl<'a> Read<'a> {
-        pub(crate) fn new(
-            file: &'a FileHandle,
-            client: &'a IPCClientSession<AsyncFsMsg, AsyncFsReply>,
-            offset: u32,
-            buf: &'a mut [u8],
-        ) -> Self {
+        pub(crate) fn new(file: &'a FileHandle, offset: u32, buf: &'a mut [u8]) -> Self {
             Read {
                 file,
-                client,
                 offset,
                 data: buf,
                 state: AtomicI32::new(0),
@@ -468,20 +386,20 @@ pub mod io_futures {
         ) -> std::task::Poll<Self::Output> {
             let bytes_read = self.bytes_read.load(Ordering::Acquire);
             if bytes_read == u32::MAX && !self.registered {
-                if let Err(e) = self.client.request(&AsyncFsMsg::Read(FileIoOperation {
-                    file: self.file.inner.session,
-                    task: TaskToken::from_waker(cx.waker()),
-                    state: self.state.as_ptr() as u32,
-                    result: self.bytes_read.as_ptr() as u32,
-                    offset: self.offset,
-                    len: self.data.len() as u32,
-                    data_ptr: self.data.as_ptr() as u32,
-                })) {
-                    Poll::Ready(Err(e.into()))
-                } else {
-                    self.registered = true;
-                    Poll::Pending
-                }
+                ASYNC_FS_POOL
+                    .get()
+                    .expect("fs not initialized")
+                    .add(AsyncFsMsg::Read(FileIoOperation {
+                        file: self.file.inner.session,
+                        task: TaskToken::from_waker(cx.waker()),
+                        state: self.state.as_ptr() as u32,
+                        result: self.bytes_read.as_ptr() as u32,
+                        offset: self.offset,
+                        len: self.data.len() as u32,
+                        data_ptr: self.data.as_ptr() as u32,
+                    }));
+                self.registered = true;
+                Poll::Pending
             } else if self.registered && bytes_read != u32::MAX {
                 state_resolve(&self.state, bytes_read as usize)
             } else {
@@ -492,7 +410,6 @@ pub mod io_futures {
 
     pub struct Write<'a> {
         file: &'a FileHandle,
-        client: &'a IPCClientSession<AsyncFsMsg, AsyncFsReply>,
         offset: u32,
         data: &'a [u8],
         state: AtomicI32,
@@ -501,15 +418,9 @@ pub mod io_futures {
     }
 
     impl<'a> Write<'a> {
-        pub(crate) fn new(
-            file: &'a FileHandle,
-            client: &'a IPCClientSession<AsyncFsMsg, AsyncFsReply>,
-            offset: u32,
-            buf: &'a [u8],
-        ) -> Self {
+        pub(crate) fn new(file: &'a FileHandle, offset: u32, buf: &'a [u8]) -> Self {
             Write {
                 file,
-                client,
                 offset,
                 data: buf,
                 state: AtomicI32::new(0),
@@ -528,20 +439,21 @@ pub mod io_futures {
         ) -> std::task::Poll<Self::Output> {
             let bytes_read = self.bytes_written.load(Ordering::Acquire);
             if bytes_read == u32::MAX && !self.registered {
-                if let Err(e) = self.client.request(&AsyncFsMsg::Write(FileIoOperation {
-                    file: self.file.inner.session,
-                    task: TaskToken::from_waker(cx.waker()),
-                    state: self.state.as_ptr() as u32,
-                    result: self.bytes_written.as_ptr() as u32,
-                    offset: self.offset,
-                    len: self.data.len() as u32,
-                    data_ptr: self.data.as_ptr() as u32,
-                })) {
-                    Poll::Ready(Err(e.into()))
-                } else {
-                    self.registered = true;
-                    Poll::Pending
-                }
+                ASYNC_FS_POOL
+                    .get()
+                    .expect("fs not initialized")
+                    .add(AsyncFsMsg::Write(FileIoOperation {
+                        file: self.file.inner.session,
+                        task: TaskToken::from_waker(cx.waker()),
+                        state: self.state.as_ptr() as u32,
+                        result: self.bytes_written.as_ptr() as u32,
+                        offset: self.offset,
+                        len: self.data.len() as u32,
+                        data_ptr: self.data.as_ptr() as u32,
+                    }));
+
+                self.registered = true;
+                Poll::Pending
             } else if self.registered && bytes_read != u32::MAX {
                 state_resolve(&self.state, bytes_read as usize)
             } else {
@@ -555,20 +467,15 @@ pub mod io_futures {
         registered: bool,
         res: AtomicI32,
         done: AtomicBool,
-        client: &'a IPCClientSession<AsyncFsMsg, AsyncFsReply>,
     }
 
     impl<'a> Flush<'a> {
-        pub(crate) fn new(
-            file: &'a FileHandle,
-            client: &'a IPCClientSession<AsyncFsMsg, AsyncFsReply>,
-        ) -> Self {
+        pub(crate) fn new(file: &'a FileHandle) -> Self {
             Flush {
                 file,
                 registered: false,
                 res: AtomicI32::new(0),
                 done: AtomicBool::new(false),
-                client,
             }
         }
     }
@@ -581,20 +488,18 @@ pub mod io_futures {
             cx: &mut std::task::Context<'_>,
         ) -> Poll<Self::Output> {
             if !self.registered {
-                if let Err(e) =
-                    self.client
-                        .request(&AsyncFsMsg::Flush(super::FileControlOperation {
-                            file: self.file.inner.session,
-                            task: TaskToken::from_waker(cx.waker()),
-                            state: self.res.as_ptr() as u32,
-                            done: self.done.as_ptr() as u32,
-                        }))
-                {
-                    Poll::Ready(Err(e.into()))
-                } else {
-                    self.registered = true;
-                    Poll::Pending
-                }
+                ASYNC_FS_POOL
+                    .get()
+                    .expect("fs not initialized")
+                    .add(AsyncFsMsg::Flush(super::FileControlOperation {
+                        file: self.file.inner.session,
+                        task: TaskToken::from_waker(cx.waker()),
+                        state: self.res.as_ptr() as u32,
+                        done: self.done.as_ptr() as u32,
+                    }));
+
+                self.registered = true;
+                Poll::Pending
             } else if self.done.load(Ordering::Acquire) {
                 state_resolve(&self.res, ())
             } else {

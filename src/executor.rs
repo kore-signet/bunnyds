@@ -74,10 +74,6 @@ mod waker {
     }
 
     unsafe fn wake(data: *const ()) {
-        // let message = ExecutorCmd::WakeTask(TaskToken(data as u32)); // cast pointer value as task token
-
-        // let client = EXECUTOR_PORT.get().unwrap();
-        // client.make_session().unwrap().request(&message).unwrap();
         WAKE_QUEUE.get().unwrap().add(TaskToken(data as u32));
     }
 
@@ -113,7 +109,7 @@ impl Default for Executor {
 
 impl Executor {
     pub fn new() -> Executor {
-        let (mut server, port) = IPCServer::new().unwrap();
+        let (_, port) = IPCServer::new().unwrap();
         let _ = EXECUTOR_PORT.set(port);
 
         let task_semaphore = TASK_QUEUE.get_or_init(SyncQueue::new).semaphore_handle;
@@ -130,25 +126,6 @@ impl Executor {
         }
     }
 
-    // pub fn spawn(&mut self, task: impl Future<Output = ()> + Send + 'static) -> Option<TaskToken> {
-    //     let task_key: TaskToken = self
-    //         .tasks
-    //         .last_entry()
-    //         .map_or(TaskToken(0), |v| TaskToken(v.key().0 + 1));
-    //     let mut fut = Box::pin(task);
-
-    //     // initial poll to let it register a waker and whatnot
-    //     let task_waker = make_waker(task_key);
-    //     let mut ctx = Context::from_waker(&task_waker);
-
-    //     if let Poll::Ready(()) = fut.as_mut().poll(&mut ctx) {
-    //         return None;
-    //     }
-
-    //     self.tasks.insert(task_key, fut);
-    //     Some(task_key)
-    // }
-
     pub fn run(self) {
         let Executor {
             tasks,
@@ -156,13 +133,13 @@ impl Executor {
             wake_semaphore,
             task_semaphore,
         } = self;
-        ExecutorHandler { task_counter: 0, wake_semaphore, task_semaphore, tasks }.run();
-        // server.run(ExecutorHandler {
-        //     task_counter: 0,
-        //     tasks,
-        //     wake_semaphore,
-        //     task_semaphore,
-        // });
+        ExecutorHandler {
+            task_counter: 0,
+            wake_semaphore,
+            task_semaphore,
+            tasks,
+        }
+        .run();
     }
 
     pub fn run_thread(self) -> std::thread::JoinHandle<()> {
@@ -242,31 +219,6 @@ impl ExecutorHandler {
         }
     }
 }
-
-// impl IPCServerHandler<ExecutorCmd, ExecutorReply> for ExecutorHandler {
-//     fn handle_request(
-//         &mut self,
-//         request: ExecutorCmd,
-//         _server: &mut IPCServer<ExecutorCmd, ExecutorReply>,
-//     ) -> ExecutorReply {
-//         match request {
-//             ExecutorCmd::WakeTask(task) => {
-//                 self.wake(task);
-//                 ExecutorReply::Ok
-//             }
-//         }
-//     }
-
-//     fn handle_additional_oshandle(
-//         &mut self,
-//         handle: ctru_sys::Handle,
-//         server: &mut IPCServer<ExecutorCmd, ExecutorReply>,
-//     ) {
-//         server.add_handle_to_list(handle);
-
-
-//     }
-// }
 
 // this impl is heavily, heavily based on https://jacko.io/async_tasks.html#joinhandle
 
@@ -374,9 +326,6 @@ pub fn spawn_blocking<T: Send + 'static>(
         let res = func();
         oneshot_tx.send(res);
     });
-    // std::thread::spawn(move || {
-    // let res = func();
-    // oneshot_tx.send(res);
-    // });
+
     oneshot_rx
 }

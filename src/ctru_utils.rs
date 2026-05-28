@@ -97,6 +97,7 @@ impl WaitSignal {
 }
 
 /// os-semaphore based queue
+#[derive(Debug)]
 pub struct SyncQueue<T> {
     pub(crate) semaphore_handle: u32,
     pub(crate) vals: parking_lot::Mutex<VecDeque<T>>,

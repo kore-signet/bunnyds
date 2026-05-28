@@ -7,7 +7,7 @@ use std::{
 use super::OSHandle;
 
 use crate::{
-    executor::{ExecutorPort, ExecutorSession, TaskToken, WAKE_QUEUE},
+    executor::{TaskToken, WAKE_QUEUE},
     tunables,
 };
 
@@ -20,6 +20,12 @@ pub static REACTOR_PORT: OnceLock<IPCClientPort<ReactorCmd, ReactorReply>> = Onc
 pub struct Reactor {
     pub(crate) server: IPCServer<ReactorCmd, ReactorReply>,
     // pub(crate) executor_session: ExecutorSession,
+}
+
+impl Default for Reactor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Reactor {
@@ -53,7 +59,6 @@ impl Reactor {
 
 struct ReactorHandler {
     wait_tokens: LiteMap<OSHandle, Vec<TaskToken>>,
-    // executor_session: ExecutorSession,
 }
 
 impl IPCServerHandler<ReactorCmd, ReactorReply> for ReactorHandler {
@@ -79,7 +84,6 @@ impl IPCServerHandler<ReactorCmd, ReactorReply> for ReactorHandler {
     ) {
         for token in self.wait_tokens.remove(&handle).unwrap() {
             WAKE_QUEUE.get().unwrap().add(token);
-            // self.executor_session.wake(token);
         }
     }
 }
